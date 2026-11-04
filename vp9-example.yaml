@@ -1,0 +1,19 @@
+# One lamp. Copy this file per lamp (vp9-<name>.yaml), set its name, and set
+# the cut-offs from your own "LED current" readings (README, "Calibrate").
+# The values below are one lamp's, measured on its charger at about 4.1 V:
+# off 0.005 A, dimmest 0.137, middle 0.339, brightest 0.671 - each cut-off
+# sits about halfway between two steps.
+#
+# First flash over USB, on the bench, before the XIAO is wired to the lamp.
+# After that, over Wi-Fi only:
+#   uvx esphome@2026.9.1 run vp9-example.yaml --device <the XIAO's IP address>
+
+substitutions:
+  name: vp9-example
+  friendly_name: VP9
+  dim_from: "0.060"
+  mid_from: "0.230"
+  bright_from: "0.500"
+
+packages:
+  vp9: !include vp9-common.yaml

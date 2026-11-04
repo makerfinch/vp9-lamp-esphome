@@ -1,0 +1,414 @@
+# ESPHome for the &Tradition Flowerpot VP9 cordless lamp: a Seeed XIAO ESP32-C6
+# in the shade. Not flashed on its own - each lamp has a small file (see
+# vp9-example.yaml) that sets its name and its calibration cut-offs and includes
+# this one. The README explains the hardware, the wiring and the calibration.
+#
+# One light entity and a Level select naming the steps. The LED's current, read
+# by an INA219 in the lamp's red feed, says which step the lamp is on, whoever
+# changed it (Home Assistant or a finger). A brightness from Home Assistant
+# becomes the number of taps that walks the cycle off -> brightest -> middle ->
+# dimmest -> off.
+#
+# Substitutions each lamp file sets:
+#   name, friendly_name              e.g. vp9-stone, VP9 Stone
+#   dim_from, mid_from, bright_from  LED amps: below dim_from is off, from it
+#                                    dimmest, from mid_from middle, from
+#                                    bright_from brightest. Per lamp - measure
+#                                    yours (README, "Calibrate").
+#
+# Pins (XIAO label = GPIO):
+#   D2 = GPIO2  -> 47 pF capacitor -> the touch rod (a fake finger)
+#   D3 = GPIO21 -> INA219 VCC: powered from a pin, so it is off in deep sleep
+#   D4 = GPIO22 <> INA219 SDA,  D5 = GPIO23 -> INA219 SCL
+#   5V <- the lamp's red on the INA219's Vin+ (battery) side, so the shunt
+#         carries only the LED board's current; GND <- the lamp's black
+#
+# Low battery: the XIAO runs off the lamp's own cell and would otherwise drain
+# it. Below sleep_below it deep-sleeps (~0.02 mA, the INA219 off with it). A
+# timer wake reads the cell for ~2 s with Wi-Fi still off, and sleeps again
+# unless it reads resume_above (charging) - a minute on Wi-Fi every 30 min
+# would average ~2.7 mA, over 100x the sleep. The lower the cell, the longer it
+# sleeps: 30 min, 4 h below 3.3 V, a day below 3.2 V - so after charging it can
+# take that long to come back. The lamp's own touch works throughout. The
+# "Stay awake" switch blocks sleep while you update the firmware.
+#
+# secrets.yaml (gitignored; copy secrets.example.yaml) holds wifi_ssid,
+# wifi_password and api_key.
+
+substitutions:
+  sleep_below: "3.50"
+  resume_above: "3.70"
+  lower_below: "3.30"
+  lowest_below: "3.20"
+  # Sleep lengths in ms: 30 min, 4 h, 24 h.
+  sleep_low_ms: "1800000"
+  sleep_lower_ms: "14400000"
+  sleep_lowest_ms: "86400000"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    - priority: 900
+      then:
+        - lambda: id(woke_low) = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+    # After a timer wake: a few cell readings with Wi-Fi off, then back to sleep
+    # unless the cell is charged. Any other boot (power-on, reset, OTA) goes
+    # straight onto Wi-Fi. No readings (INA219 fault) or Stay awake: Wi-Fi.
+    - priority: -100
+      then:
+        - if:
+            condition:
+              lambda: return id(woke_low);
+            then:
+              - wait_until:
+                  condition:
+                    lambda: return id(quick_n) >= 4;
+                  timeout: 5s
+              - lambda: |-
+                  float v = id(quick_n) > 0 ? id(quick_sum) / id(quick_n) : NAN;
+                  id(next_sleep_ms) = 0;
+                  if (isnan(v) || v < 2.0f || id(stay_awake).state || v >= ${resume_above}f) {
+                    id(woke_low) = false;
+                    return;
+                  }
+                  id(next_sleep_ms) = v < ${lowest_below}f ? ${sleep_lowest_ms} : v < ${lower_below}f ? ${sleep_lower_ms} : ${sleep_low_ms};
+                  ESP_LOGW("vp9", "Woke: cell %.2f V, below %.2f V: sleep %u min", v, ${resume_above}f, (unsigned) (id(next_sleep_ms) / 60000));
+        - if:
+            condition:
+              lambda: return id(next_sleep_ms) > 0;
+            then:
+              - deep_sleep.enter:
+                  id: sleeper
+                  sleep_duration: !lambda return id(next_sleep_ms);
+            else:
+              - wifi.enable:
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+# OTA reuses the API key.
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  # Off until on_boot has checked the cell after a timer wake.
+  enable_on_boot: false
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # The reset reason again once Wi-Fi is up, so a remote log catches it too.
+  on_connect:
+    - logger.log:
+        level: INFO
+        format: "Reset reason: %s"
+        args: ['id(reset_reason).state.c_str()']
+
+debug:
+  update_interval: 60s
+
+i2c:
+  sda: GPIO22
+  scl: GPIO23
+  scan: false
+
+deep_sleep:
+  id: sleeper
+
+# The XIAO C6 routes its radio through an RF switch: GPIO3 low enables it,
+# GPIO14 low selects the on-board ceramic antenna (high = the U.FL connector).
+# Left floating, Wi-Fi can be weak or absent. The on-board ceramic antenna is
+# selected: it reaches about -68 dBm inside the closed shade. ALWAYS_ON
+# selects the U.FL, which needs an antenna on it.
+switch:
+  # The INA219's supply, switched on before the I2C bus is set up, so the bus's
+  # recovery check sees a powered INA219, not one clamping its lines.
+  - platform: gpio
+    id: ina219_power
+    pin: GPIO21
+    restore_mode: ALWAYS_ON
+    internal: true
+    setup_priority: 1100
+  - platform: template
+    id: stay_awake
+    name: Stay awake
+    icon: mdi:sleep-off
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: gpio
+    id: rf_switch_enable
+    pin: GPIO3
+    restore_mode: ALWAYS_OFF
+    internal: true
+  - platform: gpio
+    id: antenna_select_external
+    pin: GPIO14
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+sensor:
+  - platform: uptime
+    name: Uptime
+  - platform: wifi_signal
+    name: Wi-Fi signal
+    update_interval: 60s
+  - platform: internal_temperature
+    name: Chip temperature
+  # The LED board's current, its step: the INA219 averages 128 samples per
+  # reading (68 ms), which irons out the dimmer steps' PWM. A step counts once two
+  # readings agree, so the in-between reading of a change is never taken for one.
+  # Its bus voltage is the cell's (Vin- to GND), less a few tens of mV with the
+  # LED on.
+  - platform: ina219
+    address: 0x40
+    shunt_resistance: 0.1 ohm
+    max_voltage: 16V
+    max_current: 1A
+    update_interval: 500ms
+    current:
+      id: led_current
+      internal: true
+      accuracy_decimals: 3
+      on_value:
+        - lambda: |-
+            int s = x < ${dim_from}f ? 0 : x < ${mid_from}f ? 3 : x < ${bright_from}f ? 2 : 1;
+            if (s == id(seen_step)) {
+              if (id(seen_count) < 2) id(seen_count)++;
+            } else {
+              id(seen_step) = s;
+              id(seen_count) = 1;
+            }
+            if (id(seen_count) >= 2 && s != id(current_step)) {
+              id(current_step) = s;
+              if (!id(busy)) id(mirror).execute();
+            }
+    bus_voltage:
+      id: cell_raw
+      internal: true
+      # The quick check after a timer wake (on_boot).
+      on_value:
+        - lambda: |-
+            if (id(woke_low) && !isnan(x)) {
+              id(quick_sum) += x;
+              id(quick_n)++;
+            }
+  # The same current every 10 s, for setting and re-checking the cut-offs.
+  - platform: copy
+    source_id: led_current
+    name: LED current
+    unit_of_measurement: A
+    device_class: current
+    entity_category: diagnostic
+    filters:
+      - throttle: 10s
+  # The cell, as the mean of the last 20 readings (10 s); this decides sleep.
+  - platform: copy
+    source_id: cell_raw
+    id: cell
+    name: Battery voltage
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 2
+    filters:
+      - sliding_window_moving_average:
+          window_size: 20
+          send_every: 20
+    on_value:
+      - lambda: |-
+          // Under 2 V is no reading (an INA219 fault), not a cell: never sleep on it.
+          // Not in the first minute after a power-on or reset, so there is
+          // always a window for OTA. A timer wake is on_boot's to decide.
+          if (isnan(x) || x < 2.0f || id(stay_awake).state || id(woke_low)) return;
+          if (millis() < 60000 || x >= ${sleep_below}f) return;
+          id(next_sleep_ms) = x < ${lowest_below}f ? ${sleep_lowest_ms} : x < ${lower_below}f ? ${sleep_lower_ms} : ${sleep_low_ms};
+          ESP_LOGW("vp9", "Cell %.2f V, below %.2f V: sleep %u min", x, ${sleep_below}f, (unsigned) (id(next_sleep_ms) / 60000));
+          id(sleep_now).execute();
+
+text_sensor:
+  - platform: debug
+    reset_reason:
+      id: reset_reason
+      name: Reset reason
+  - platform: wifi_info
+    ip_address:
+      name: IP address
+    mac_address:
+      name: MAC address
+
+# Steps are numbered by place in the cycle: 0 off, 1 brightest, 2 middle,
+# 3 dimmest; -1 until the sensor has spoken after boot.
+globals:
+  - id: current_step
+    type: int
+    initial_value: '-1'
+  - id: target_step
+    type: int
+    initial_value: '0'
+  - id: seen_step
+    type: int
+    initial_value: '-1'
+  - id: seen_count
+    type: int
+    initial_value: '0'
+  - id: taps_left
+    type: int
+    initial_value: '0'
+  - id: busy
+    type: bool
+    initial_value: 'false'
+  # Woken from a low-battery sleep, until the quick check finds the cell charged.
+  # Not restored - each wake from deep sleep is a fresh boot, set in on_boot.
+  - id: woke_low
+    type: bool
+    initial_value: 'false'
+  # The quick check after a timer wake, and the next sleep's length.
+  - id: quick_sum
+    type: float
+    initial_value: '0'
+  - id: quick_n
+    type: int
+    initial_value: '0'
+  - id: next_sleep_ms
+    type: uint32_t
+    initial_value: '0'
+  # A command arrived mid-walk and a second walk is queued for it.
+  - id: pending
+    type: bool
+    initial_value: 'false'
+
+# The tap: D2 grounds the far side of the 47 pF capacitor on the rod, adding a
+# finger-sized step.
+output:
+  - platform: gpio
+    id: tap_out
+    # Open-drain and inverted: released (high-Z) at rest, so the capacitor floats;
+    # pulled to GND for a tap.
+    pin:
+      number: GPIO2
+      inverted: true
+      mode:
+        output: true
+        open_drain: true
+  # What the light asks for. A brightness picks the nearest step; a step the lamp
+  # is already on (as when a finger tap is mirrored) costs no taps. A command
+  # mid-walk queues one more walk, which starts from wherever the lamp ended up
+  # (Apple Home sends on then off within two seconds when tapped twice).
+  # From off, any "on" goes to brightest whatever brightness it asked for: one
+  # tap, and every route - a dial, Siri, HomeKit - starts the same way and is
+  # dimmed from there.
+  - platform: template
+    id: level_out
+    type: float
+    write_action:
+      - lambda: |-
+          int t = state <= 0.0f ? 0 : state < 0.5f ? 3 : state < 0.83f ? 2 : 1;
+          if (t != 0 && id(current_step) == 0 && !id(busy)) t = 1;
+          id(target_step) = t;
+          if (id(current_step) < 0) return;
+          if (id(busy)) {
+            if (!id(pending)) {
+              id(pending) = true;
+              id(apply).execute();
+            }
+            return;
+          }
+          if (t != id(current_step)) id(apply).execute();
+
+light:
+  - platform: monochromatic
+    id: lamp
+    name: None
+    output: level_out
+    gamma_correct: 1.0
+    default_transition_length: 0s
+    # Never drive the lamp at boot: the INA219 sets the state instead.
+    restore_mode: ALWAYS_OFF
+
+script:
+  - id: sleep_now
+    then:
+      - deep_sleep.enter:
+          id: sleeper
+          sleep_duration: !lambda return id(next_sleep_ms);
+  - id: tap
+    mode: queued
+    then:
+      - logger.log: "TAP fired"
+      - output.turn_on: tap_out
+      - delay: 150ms
+      - output.turn_off: tap_out
+      # Gap before a queued next tap, so the touch IC sees two taps, not one.
+      - delay: 400ms
+  # Walk the cycle to target_step, then wait for the current to settle (two
+  # readings) before mirroring what the lamp actually did.
+  - id: apply
+    mode: queued
+    max_runs: 2
+    then:
+      - lambda: |-
+          id(busy) = true;
+          id(pending) = false;
+          id(taps_left) = (id(target_step) - id(current_step) + 4) % 4;
+      - while:
+          condition:
+            lambda: return id(taps_left) > 0;
+          then:
+            - script.execute: tap
+            - script.wait: tap
+            - lambda: id(taps_left)--;
+      - delay: 3s
+      # With a walk queued behind this one, stay busy and let it mirror.
+      - if:
+          condition:
+            lambda: return !id(pending);
+          then:
+            - lambda: id(busy) = false;
+            - script.execute: mirror
+  # Mirror the lamp's step onto the light, without tapping (write_action sees
+  # the step it is already on).
+  - id: mirror
+    then:
+      - lambda: |-
+          int s = id(current_step);
+          if (s < 0) return;
+          auto call = s == 0 ? id(lamp).turn_off() : id(lamp).turn_on();
+          if (s != 0) call.set_brightness(s == 1 ? 1.0f : s == 2 ? 0.66f : 0.33f);
+          call.set_transition_length(0);
+          call.perform();
+          const char *names[] = {"Off", "Bright", "Medium", "Dim"};
+          id(level_select).publish_state(names[s]);
+
+# The three steps by name, for when a slider is too vague. It drives the light,
+# so it walks the cycle the same way, and the mirror sets it back to the truth.
+select:
+  - platform: template
+    id: level_select
+    name: Level
+    icon: mdi:lamp
+    options: ["Off", "Dim", "Medium", "Bright"]
+    set_action:
+      - lambda: |-
+          if (x == "Off") {
+            auto call = id(lamp).turn_off();
+            call.perform();
+            return;
+          }
+          auto call = id(lamp).turn_on();
+          call.set_brightness(x == "Bright" ? 1.0f : x == "Medium" ? 0.66f : 0.33f);
+          call.set_transition_length(0);
+          call.perform();
+
+button:
+  - platform: restart
+    name: Restart
