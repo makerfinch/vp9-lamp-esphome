@@ -1,8 +1,9 @@
 # One lamp. Copy this file per lamp (vp9-<name>.yaml), set its name, and set
 # the cut-offs from your own "LED current" readings (README, "Calibrate").
-# The values below are one lamp's, measured on its charger at about 4.1 V:
-# off 0.005 A, dimmest 0.137, middle 0.339, brightest 0.671 - each cut-off
-# sits about halfway between two steps.
+# The current follows the supply, so each step is a range. One lamp's:
+#   on its charger, no battery (~4.1 V): off 0.005 A, dimmest 0.137, middle 0.339, brightest 0.671
+#   on a 3.7 V battery:                  off 0.002 A, dimmest 0.097, middle 0.226, brightest 0.431
+# Each cut-off sits about halfway between two ranges, so it holds on either.
 #
 # First flash over USB, on the bench, before the XIAO is wired to the lamp.
 # After that, over Wi-Fi only:
@@ -11,9 +12,9 @@
 substitutions:
   name: vp9-example
   friendly_name: VP9
-  dim_from: "0.060"
-  mid_from: "0.230"
-  bright_from: "0.500"
+  dim_from: "0.050"
+  mid_from: "0.180"
+  bright_from: "0.385"
 
 packages:
   vp9: !include vp9-common.yaml

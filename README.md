@@ -84,8 +84,9 @@ firmware taps round the cycle.
 
 ### Knowing the step
 
-An **INA219** sits in the LED's red power wire. Each step draws a clearly different current (one lamp: off
-0.005 A, dimmest 0.137, middle 0.339, brightest 0.671), so the reading names the step whoever changed it.
+An **INA219** sits in the LED's red power wire. Each step draws a clearly different current, so the reading
+names the step whoever changed it. The current follows the supply: one lamp's brightest draws 0.67 A on its
+charger with no battery, but 0.43 A on a 3.7 V battery, so calibrate on both.
 A step counts once two readings in a row agree. The INA219 also reads the battery voltage.
 
 A light sensor was tried first and failed: daylight through the shade read as "on".
@@ -167,15 +168,18 @@ D0 to D6 down one edge, GND, 3V3 and D10 to D7 down the other.*
 1. Put the lamp on its charger. It runs without the battery, which makes a safe first test.
 2. In Home Assistant, check that **LED current** and **Battery voltage** show values.
 3. Tap through all four steps by hand, about 10 seconds on each, and note **LED current** at each.
-4. Set `dim_from`, `mid_from` and `bright_from` in your `vp9-<name>.yaml` about halfway between the steps,
-   and update over Wi-Fi:
+4. If you use a battery, plug it in and note the four currents again: they read lower on a battery than
+   on the charger alone.
+5. Set `dim_from`, `mid_from` and `bright_from` in your `vp9-<name>.yaml` about halfway between the steps,
+   between the ranges if you have two readings per step, and update over Wi-Fi:
 
    ```sh
    uvx esphome@2026.9.1 run vp9-<name>.yaml --device <the XIAO's IP address>
    ```
 
-5. Tap through again and check that **Level** follows. Then try switching and dimming from Home Assistant.
-6. Plug the battery back in, if you use one (see [Keep it on its charger](#keep-it-on-its-charger)).
+6. Tap through again and check that **Level** follows. Then try switching and dimming from Home Assistant.
+
+Using a battery at all is optional (see [Keep it on its charger](#keep-it-on-its-charger)).
 
 ## In Home Assistant
 
