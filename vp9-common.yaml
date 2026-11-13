@@ -63,7 +63,7 @@ esphome:
             then:
               - wait_until:
                   condition:
-                    lambda: return id(quick_n) >= 4;
+                    lambda: return id(quick_n) >= 20;
                   timeout: 5s
               - lambda: |-
                   float v = id(quick_n) > 0 ? id(quick_sum) / id(quick_n) : NAN;
@@ -170,12 +170,14 @@ sensor:
   # readings agree, so the in-between reading of a change is never taken for one.
   # Its bus voltage is the cell's (Vin- to GND), less a few tens of mV with the
   # LED on.
+  # Read every 100 ms, so a walk round the cycle confirms each tap within
+  # ~0.2 s and Home Assistant sees the new step as soon as the lamp reaches it.
   - platform: ina219
     address: 0x40
     shunt_resistance: 0.1 ohm
     max_voltage: 16V
     max_current: 1A
-    update_interval: 500ms
+    update_interval: 100ms
     current:
       id: led_current
       internal: true
@@ -212,7 +214,7 @@ sensor:
     entity_category: diagnostic
     filters:
       - throttle: 10s
-  # The cell, as the mean of the last 20 readings (10 s); this decides sleep.
+  # The cell, as the mean of the last 100 readings (10 s); this decides sleep.
   - platform: copy
     source_id: cell_raw
     id: cell
@@ -222,8 +224,8 @@ sensor:
     accuracy_decimals: 2
     filters:
       - sliding_window_moving_average:
-          window_size: 20
-          send_every: 20
+          window_size: 100
+          send_every: 100
     on_value:
       - lambda: |-
           // Under 2 V is no reading (an INA219 fault), not a cell: never sleep on it.
@@ -264,6 +266,10 @@ globals:
   - id: taps_left
     type: int
     initial_value: '0'
+  # The step before the walk's latest tap, to see it land.
+  - id: from_step
+    type: int
+    initial_value: '-1'
   - id: busy
     type: bool
     initial_value: 'false'
@@ -348,10 +354,15 @@ script:
       - output.turn_on: tap_out
       - delay: 150ms
       - output.turn_off: tap_out
-      # Gap before a queued next tap, so the touch IC sees two taps, not one.
-      - delay: 400ms
-  # Walk the cycle to target_step, then wait for the current to settle (two
-  # readings) before mirroring what the lamp actually did.
+      # A short release before any next tap; the walk paces taps on the LED
+      # current, not on this.
+      - delay: 100ms
+  # Walk the cycle to target_step one confirmed step at a time: tap, wait for
+  # the INA219 to show the lamp moved (two agreeing readings, ~0.2 s), then the
+  # next tap. A tap that does not land times out and is sent again. It follows
+  # target_step and current_step live, so a new command or a finger mid-walk
+  # just changes where it ends. Mirrors as soon as the lamp arrives - with a
+  # fixed settle wait instead, Home Assistant showed every change seconds late.
   - id: apply
     mode: queued
     max_runs: 2
@@ -359,15 +370,28 @@ script:
       - lambda: |-
           id(busy) = true;
           id(pending) = false;
-          id(taps_left) = (id(target_step) - id(current_step) + 4) % 4;
+          id(taps_left) = 8;  // the most taps one walk may send, retries included
       - while:
           condition:
-            lambda: return id(taps_left) > 0;
+            lambda: return id(current_step) >= 0 && id(current_step) != id(target_step) && id(taps_left) > 0;
           then:
+            - lambda: |-
+                id(from_step) = id(current_step);
+                id(taps_left)--;
             - script.execute: tap
             - script.wait: tap
-            - lambda: id(taps_left)--;
-      - delay: 3s
+            - wait_until:
+                condition:
+                  lambda: return id(current_step) != id(from_step);
+                timeout: 1500ms
+      - if:
+          condition:
+            lambda: return id(current_step) != id(target_step);
+          then:
+            - logger.log:
+                level: WARN
+                format: "Walk gave up at step %d, wanted %d"
+                args: [ 'id(current_step)', 'id(target_step)' ]
       # With a walk queued behind this one, stay busy and let it mirror.
       - if:
           condition:

@@ -80,14 +80,17 @@ The lamp's touch chip watches the capacitance of the rod. Measured on this lamp:
 So the XIAO taps through a small capacitor: **rod → 47 pF → pin D2**. D2 is set up open-drain. At rest it
 lets go, the capacitor floats, and the rod sees almost nothing, so a finger still works. For a tap it pulls
 D2 to ground for 150 ms, which adds the capacitor to the rod: a finger-sized step. To reach a step, the
-firmware taps round the cycle.
+firmware taps round the cycle one step at a time: it waits for the LED current to show each tap landed
+(about 0.3 s a tap) before the next, and taps again if one did not. Home Assistant sees the new step as
+soon as the lamp reaches it - about half a second for on, a little over a second for brightest to off.
 
 ### Knowing the step
 
 An **INA219** sits in the LED's red power wire. Each step draws a clearly different current, so the reading
 names the step whoever changed it. The current follows the supply: one lamp's brightest draws 0.67 A on its
 charger with no battery, but 0.43 A on a 3.7 V battery, so calibrate on both.
-A step counts once two readings in a row agree. The INA219 also reads the battery voltage.
+It is read every 100 ms, and a step counts once two readings in a row agree. The INA219 also reads the
+battery voltage.
 
 A light sensor was tried first and failed: daylight through the shade read as "on".
 
@@ -117,7 +120,8 @@ Do the one USB flash **before** the XIAO is wired to the lamp. Once it is in the
 only (see [Rules](#rules)).
 
 1. Copy `secrets.example.yaml` to `secrets.yaml` and fill it in. The XIAO only does 2.4 GHz Wi-Fi.
-2. Copy `vp9-example.yaml` to `vp9-<name>.yaml` and set the `name`. Keep the cut-offs for now.
+2. Copy `vp9-example.yaml` to `vp9-<name>.yaml` and set the `name`. Keep the cut-offs for now. It includes
+   your copy of `vp9-common.yaml`; it can pull a pinned release from GitHub instead (see the comment in it).
 3. Plug the XIAO in over USB and run:
 
    ```sh
@@ -143,7 +147,7 @@ touch becomes unreliable.
 | Wire | From → to |
 | --- | --- |
 | LED feed (red) | Cut the lamp's red at its lever connector. The stem end goes into a lever connector, which feeds the INA219's **Vin+** (right screw terminal, chip side up). **Vin−** goes on to the LED board's +. |
-| 5 V (red) | The same lever connector → XIAO **5V**. It takes power before the INA219, so the INA219 measures only the LED. |
+| 5 V (red) | The same lever connector → XIAO **5V**, or its **`BAT+`** pad (see below). It takes power before the INA219, so the INA219 measures only the LED. |
 | Ground (black) | Ground lever connector: the stem's black, the LED board's −, XIAO **GND**, INA219 **GND**. |
 | INA219 power (white) | XIAO **D3** → INA219 **VCC**. A pin rather than 3V3, so the INA219 switches off when the XIAO sleeps. |
 | SDA (blue) | XIAO **D4** → INA219 **SDA** |
@@ -162,6 +166,27 @@ D0 to D6 down one edge, GND, 3V3 and D10 to D7 down the other.*
   SDA to VCC and SCL to VCC should each read about 10 kΩ (the board's own pull-up resistors), and GND should
   beep through to the XIAO's GND. A reading of "1" or OL is a bad solder joint.
 - **Insulate any soldered splice** (heat-shrink). Jumper plugs and lever connectors need nothing.
+
+#### Optional: feed the XIAO on `BAT+` instead of `5V`
+
+The XIAO has two battery pads on its underside, **`BAT+`** and **`BAT−`**. Feeding it on `BAT+` instead
+of the `5V` pin helps when the lamp runs from its battery. `5V` passes through a Schottky diode that drops
+about 0.35 V and a 100 kΩ resistor that draws about 40 µA, twice the chip's own deep sleep. `BAT+` passes
+through a transistor switch with almost no drop. So on `BAT+` the board keeps running further down the
+battery and drains it less while asleep. On the charger alone, without a battery, it makes no difference.
+
+- Solder a short red wire to the `BAT+` pad and put its other end into the red lever connector in place
+  of the wire to `5V`. Leave `5V` and `BAT−` empty: `GND` is the same ground.
+- Insulate the joint so it cannot touch the metal shield next to it. Before fitting: the wire beeps through
+  to `BAT+` and does **not** beep to `GND`.
+- Strip about 11 mm for the lever connector and push it fully in, so the lever clamps copper, not
+  insulation. A wire that only looks seated leaves the XIAO dead in the lamp. To find one: with the lamp
+  on, `BAT+` to `GND` should read the battery's ~4 V, the same as the INA219's Vin+.
+- On `BAT+`, plugging USB into the XIAO would charge the lamp's battery from the XIAO's own charger: even
+  more reason never to plug USB in while it is wired to the lamp.
+
+Proven on one lamp running from its battery. **Not yet proven:** the sleep-current saving, which has not
+been measured.
 
 ### 3. Power up and calibrate
 

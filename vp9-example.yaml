@@ -18,3 +18,7 @@ substitutions:
 
 packages:
   vp9: !include vp9-common.yaml
+  # Or, instead of keeping your own copy, pull it from GitHub pinned to a
+  # release, and move the pin when you choose to update (release notes say what
+  # changed):
+  #   vp9: github://makerfinch/vp9-lamp-esphome/vp9-common.yaml@v1.1.0
