@@ -29,7 +29,9 @@
 # unless it reads resume_above (charging) - a minute on Wi-Fi every 30 min
 # would average ~2.7 mA, over 100x the sleep. The lower the cell, the longer it
 # sleeps: 30 min, 4 h below 3.3 V, a day below 3.2 V - so after charging it can
-# take that long to come back. The lamp's own touch works throughout. The
+# take that long to come back. Every sleep, and every timer wake that sleeps
+# again, first walks the lamp off: the sleep stops only the XIAO, and a lit LED
+# would drain the cell on through it. A finger can still turn the lamp on. The
 # "Stay awake" switch blocks sleep while you update the firmware.
 #
 # secrets.yaml (gitignored; copy secrets.example.yaml) holds wifi_ssid,
@@ -78,9 +80,8 @@ esphome:
             condition:
               lambda: return id(next_sleep_ms) > 0;
             then:
-              - deep_sleep.enter:
-                  id: sleeper
-                  sleep_duration: !lambda return id(next_sleep_ms);
+              # sleep_now, so a lamp a finger turned on meanwhile goes off too
+              - script.execute: sleep_now
             else:
               - wifi.enable:
 
@@ -342,8 +343,25 @@ light:
     restore_mode: ALWAYS_OFF
 
 script:
+  # The lamp goes off before every sleep: the sleep stops only the XIAO, and a
+  # lamp left on would drain the cell on through it - down past the low-battery
+  # cut-off the sleep exists to respect. A walk that fails is logged and it
+  # sleeps anyway.
   - id: sleep_now
     then:
+      - wait_until:
+          condition:
+            lambda: return !id(busy);
+          timeout: 5s
+      - if:
+          condition:
+            lambda: return id(current_step) > 0;
+          then:
+            - lambda: |-
+                ESP_LOGW("vp9", "Lamp on step %d: off before sleep", id(current_step));
+                id(target_step) = 0;
+            - script.execute: apply
+            - script.wait: apply
       - deep_sleep.enter:
           id: sleeper
           sleep_duration: !lambda return id(next_sleep_ms);

@@ -109,8 +109,14 @@ for about two seconds with Wi-Fi still off, and goes straight back to sleep unle
 
 So after a deep discharge it can take up to a day on the charger before it is back in Home Assistant. A
 power-on (unplugging and replugging the charger, with no battery fitted) always brings it straight back,
-with a minute's window for a firmware update. The lamp's own touch keeps working the whole time. A
-**Stay awake** switch blocks the sleep while you update the firmware.
+with a minute's window for a firmware update. A **Stay awake** switch blocks the sleep while you update
+the firmware.
+
+**The lamp goes off before the XIAO sleeps** (since v1.2.0). The sleep stops only the XIAO: a lamp left on
+keeps its LED drawing 0.4-0.7 A from the battery, which before v1.2.0 drained it on through the sleep,
+below the 3.5 V the sleep is meant to respect. Now the XIAO taps the lamp down to off first, and does the same at every timer wake
+that finds the battery still low, so a lamp someone switches on during the sleep goes off again at the next
+check. The lamp's own touch keeps working the whole time.
 
 ## Build
 
